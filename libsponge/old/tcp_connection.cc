@@ -22,12 +22,11 @@ size_t TCPConnection::time_since_last_segment_received() const { return _time; }
 
 void TCPConnection::segment_received(const TCPSegment &seg) {
     DUMMY_CODE(seg);
+    _time = 0;
 
     if (!_alive) {
         return;
     }
-
-    _time = 0;
 
     if (seg.header().rst) {
         bool send_rst = false;
@@ -47,7 +46,7 @@ void TCPConnection::segment_received(const TCPSegment &seg) {
     if (seg.header().syn && !_syn) {
         connect();
         return;
-	}
+    }
 
     if (seg.header().ack) {
         _sender.ack_received(seg.header().ackno, seg.header().win);
@@ -55,10 +54,6 @@ void TCPConnection::segment_received(const TCPSegment &seg) {
 
     if (seg.length_in_sequence_space() > 0 && _sender.segments_out().empty()) {
         _sender.send_empty_segment();
-    }
-
-    if (_linger_after_streams_finish && inbound_stream().input_ended() && !outbound_stream().eof()) {
-        _linger_after_streams_finish = false;
     }
 
     send_segments_out();
@@ -79,11 +74,11 @@ size_t TCPConnection::write(const string &data) {
 void TCPConnection::tick(const size_t ms_since_last_tick) {
     DUMMY_CODE(ms_since_last_tick);
 
+    _time += ms_since_last_tick;
+
     if (!_alive) {
         return;
     }
-
-    _time += ms_since_last_tick;
 
     _sender.tick(ms_since_last_tick);
 
@@ -94,11 +89,6 @@ void TCPConnection::tick(const size_t ms_since_last_tick) {
     }
 
     send_segments_out();
-
-    if (outbound_stream().eof() && _sender.bytes_in_flight() == 0 && inbound_stream().input_ended() &&
-        (!_linger_after_streams_finish || time_since_last_segment_received() >= 10 * _cfg.rt_timeout)) {
-        _alive = false;
-    }
 }
 
 void TCPConnection::end_input_stream() {
@@ -137,6 +127,18 @@ void TCPConnection::send_segments_out() {
         }
         segments_out().push(seg);
         _sender.segments_out().pop();
+    }
+
+    if (_linger_after_streams_finish) {
+        if (inbound_stream().input_ended()) {
+            if (!outbound_stream().eof()) {
+                _linger_after_streams_finish = false;
+            } else if (_sender.bytes_in_flight() == 0 && time_since_last_segment_received() >= 10 * _cfg.rt_timeout) {
+                _alive = false;
+            }
+        }
+    } else if (outbound_stream().eof() && _sender.bytes_in_flight() == 0) {
+        _alive = false;
     }
 }
 

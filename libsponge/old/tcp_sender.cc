@@ -95,24 +95,26 @@ void TCPSender::ack_received(const WrappingInt32 ackno, const uint16_t window_si
     DUMMY_CODE(ackno, window_size);
 
     uint64_t n = unwrap(ackno, _isn, _next_seqno);
-    if (n > _next_seqno || n < _expected_seqno) {
+    if (n > _next_seqno) {
         return;
     }
 
-    bool valid = false;
-    while (!_outstanding.empty() && _outstanding.front().first <= n) {
-        _expected_seqno = _outstanding.front().first;
-        _outstanding.pop();
-        valid = true;
-    }
+    if (n > _expected_seqno) {
+        bool valid = false;
+        while (!_outstanding.empty() && _outstanding.front().first <= n) {
+            _expected_seqno = _outstanding.front().first;
+            _outstanding.pop();
+            valid = true;
+        }
 
-    if (valid) {
-        _alarm = false;
-        _consecutive_retransmissions = 0;
-        _retransmission_timeout = _initial_retransmission_timeout;
-        if (!_outstanding.empty()) {
-            _alarm = true;
-            _time = 0;
+        if (valid) {
+            _alarm = false;
+            _consecutive_retransmissions = 0;
+            _retransmission_timeout = _initial_retransmission_timeout;
+            if (!_outstanding.empty()) {
+                _alarm = true;
+                _time = 0;
+            }
         }
     }
 

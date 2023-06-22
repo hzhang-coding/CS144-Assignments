@@ -64,6 +64,8 @@ void BufferList::remove_prefix(size_t n) {
     }
 }
 
+void BufferList::pop_front() { _buffers.pop_front(); }
+
 BufferViewList::BufferViewList(const BufferList &buffers) {
     for (const auto &x : buffers.buffers()) {
         _views.push_back(x);

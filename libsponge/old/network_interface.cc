@@ -34,35 +34,38 @@ void NetworkInterface::send_datagram(const InternetDatagram &dgram, const Addres
     const uint32_t next_hop_ip = next_hop.ipv4_numeric();
     DUMMY_CODE(dgram, next_hop, next_hop_ip);
 
-    if (_ip_to_ethernet.count(next_hop_ip) && _waiting.empty()) {
-        EthernetAddress next_hop_ethernet = _ip_to_ethernet[next_hop_ip].first;
+    if (_ip_to_ethernet.find(next_hop_ip) == _ip_to_ethernet.end()) {
+        _time_since_last_ARP_sended = 5000;
+        while (_ip_to_ethernet.find(next_hop_ip) == _ip_to_ethernet.end()) {
+            if (_time_since_last_ARP_sended >= 5000) {
+                _time_since_last_ARP_sended = 0;
 
-        EthernetFrame s_frame;
-        s_frame.header().dst = next_hop_ethernet;
-        s_frame.header().src = _ethernet_address;
-        s_frame.header().type = EthernetHeader::TYPE_IPv4;
-        s_frame.payload() = move(dgram.serialize());
+                ARPMessage s_msg;
+                s_msg.opcode = ARPMessage::OPCODE_REQUEST;
+                s_msg.sender_ethernet_address = _ethernet_address;
+                s_msg.sender_ip_address = _ip;
+                s_msg.target_ip_address = next_hop_ip;
 
-        _frames_out.emplace(s_frame);
-    } else {
-        if (_waiting.empty()) {
-            ARPMessage s_msg;
-            s_msg.opcode = ARPMessage::OPCODE_REQUEST;
-            s_msg.sender_ethernet_address = _ethernet_address;
-            s_msg.sender_ip_address = _ip;
-            s_msg.target_ip_address = next_hop_ip;
+                EthernetFrame s_frame;
+                s_frame.header().dst = ETHERNET_BROADCAST;
+                s_frame.header().src = _ethernet_address;
+                s_frame.header().type = EthernetHeader::TYPE_ARP;
+                s_frame.payload() = s_msg.serialize();
 
-            EthernetFrame s_frame;
-            s_frame.header().dst = ETHERNET_BROADCAST;
-            s_frame.header().src = _ethernet_address;
-            s_frame.header().type = EthernetHeader::TYPE_ARP;
-            s_frame.payload() = move(s_msg.serialize());
-
-            _frames_out.emplace(s_frame);
+                _frames_out.emplace(s_frame);
+            }
         }
-
-        _waiting.push({_time, {dgram, next_hop_ip}});
     }
+
+    EthernetAddress next_hop_ethernet = _ip_to_ethernet[next_hop_ip];
+
+    EthernetFrame s_frame;
+    s_frame.header().dst = next_hop_ethernet;
+    s_frame.header().src = _ethernet_address;
+    s_frame.header().type = EthernetHeader::TYPE_IPv4;
+    s_frame.payload() = dgram.serialize();
+
+    _frames_out.emplace(s_frame);
 }
 
 //! \param[in] frame the incoming Ethernet frame
@@ -80,28 +83,10 @@ optional<InternetDatagram> NetworkInterface::recv_frame(const EthernetFrame &fra
     } else if (frame.header().type == EthernetHeader::TYPE_ARP) {
         ARPMessage r_msg;
         if (r_msg.parse(frame.payload()) == ParseResult::NoError) {
-            if (!_ip_to_ethernet.count(r_msg.sender_ip_address)) {
-                _ip_to_ethernet[r_msg.sender_ip_address] = {r_msg.sender_ethernet_address, 1};
-            } else {
-                _ip_to_ethernet[r_msg.sender_ip_address].first = r_msg.sender_ethernet_address;
-                ++_ip_to_ethernet[r_msg.sender_ip_address].second;
-            }
-
-            _to_expire.push({_time, r_msg.sender_ip_address});
-
-            while (!_waiting.empty() && _ip_to_ethernet.count(_waiting.front().second.second)) {
-                EthernetAddress next_hop_ethernet = _ip_to_ethernet[_waiting.front().second.second].first;
-
-                EthernetFrame s_frame;
-                s_frame.header().dst = next_hop_ethernet;
-                s_frame.header().src = _ethernet_address;
-                s_frame.header().type = EthernetHeader::TYPE_IPv4;
-                s_frame.payload() = move(_waiting.front().second.first.serialize());
-
-                _frames_out.emplace(s_frame);
-
-                _waiting.pop();
-            }
+            string str_sender_ethernet_address = to_string(r_msg.sender_ethernet_address);
+            _ethernet_to_ip[str_sender_ethernet_address] = r_msg.sender_ip_address;
+            _ip_to_ethernet[r_msg.sender_ip_address] = r_msg.sender_ethernet_address;
+            _not_expired.push({_time, {r_msg.sender_ip_address, str_sender_ethernet_address}});
 
             if (r_msg.opcode == ARPMessage::OPCODE_REQUEST && r_msg.target_ip_address == _ip) {
                 ARPMessage s_msg;
@@ -115,7 +100,7 @@ optional<InternetDatagram> NetworkInterface::recv_frame(const EthernetFrame &fra
                 s_frame.header().dst = r_msg.sender_ethernet_address;
                 s_frame.header().src = _ethernet_address;
                 s_frame.header().type = EthernetHeader::TYPE_ARP;
-                s_frame.payload() = move(s_msg.serialize());
+                s_frame.payload() = s_msg.serialize();
 
                 _frames_out.emplace(s_frame);
             }
@@ -130,29 +115,11 @@ void NetworkInterface::tick(const size_t ms_since_last_tick) {
 
     _time += ms_since_last_tick;
 
-    while (!_to_expire.empty() && _time - _to_expire.front().first >= 30000) {
-        // --_ip_to_ethernet[_to_expire.front().second].second;
-        if (--_ip_to_ethernet[_to_expire.front().second].second == 0) {
-            _ip_to_ethernet.erase(_to_expire.front().second);
-        }
-        _to_expire.pop();
-    }
+    _time_since_last_ARP_sended += ms_since_last_tick;
 
-    if (!_waiting.empty() && _time - _waiting.front().first >= 5000) {
-        _waiting.front().first = _time;
-
-        ARPMessage s_msg;
-        s_msg.opcode = ARPMessage::OPCODE_REQUEST;
-        s_msg.sender_ethernet_address = _ethernet_address;
-        s_msg.sender_ip_address = _ip;
-        s_msg.target_ip_address = _waiting.front().second.second;
-
-        EthernetFrame s_frame;
-        s_frame.header().dst = ETHERNET_BROADCAST;
-        s_frame.header().src = _ethernet_address;
-        s_frame.header().type = EthernetHeader::TYPE_ARP;
-        s_frame.payload() = move(s_msg.serialize());
-
-        _frames_out.emplace(s_frame);
+    while (!_not_expired.empty() && _time - _not_expired.front().first >= 30000) {
+        _ip_to_ethernet.erase(_not_expired.front().second.first);
+        _ethernet_to_ip.erase(_not_expired.front().second.second);
+        _not_expired.pop();
     }
 }

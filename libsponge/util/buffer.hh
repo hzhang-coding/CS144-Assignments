@@ -92,6 +92,8 @@ class BufferList {
 
     //! \brief Make a copy to a new std::string
     std::string concatenate() const;
+
+    void pop_front();
 };
 
 //! \brief A non-owning temporary view (similar to std::string_view) of a discontiguous string
